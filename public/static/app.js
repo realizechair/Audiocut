@@ -651,17 +651,61 @@
     showToast(`${parts}等分の分割ポイントを生成しました`, 'success');
   });
 
-  // Time-based split
+  // Time-based split (minutes + seconds)
+  function getTimeIntervalSeconds() {
+    const minutes = parseInt($('#time-minutes').value) || 0;
+    const seconds = parseInt($('#time-seconds').value) || 0;
+    return minutes * 60 + seconds;
+  }
+
+  function formatIntervalLabel(totalSeconds) {
+    const m = Math.floor(totalSeconds / 60);
+    const s = totalSeconds % 60;
+    if (m > 0 && s > 0) return `${m}分${s}秒`;
+    if (m > 0) return `${m}分`;
+    return `${s}秒`;
+  }
+
+  function updateIntervalPreview() {
+    const total = getTimeIntervalSeconds();
+    const preview = $('#time-interval-preview');
+    if (total > 0 && duration > 0) {
+      const count = Math.floor(duration / total);
+      preview.textContent = `= ${formatIntervalLabel(total)}ごと（約${count}分割）`;
+    } else {
+      preview.textContent = '';
+    }
+  }
+
+  $('#time-minutes').addEventListener('input', updateIntervalPreview);
+  $('#time-seconds').addEventListener('input', updateIntervalPreview);
+
+  // Preset buttons
+  $$('.time-preset').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const m = parseInt(btn.dataset.minutes) || 0;
+      const s = parseInt(btn.dataset.seconds) || 0;
+      $('#time-minutes').value = m;
+      $('#time-seconds').value = s;
+      // Highlight active preset
+      $$('.time-preset').forEach(b => { b.classList.remove('bg-primary-100', 'text-primary-700', 'border-primary-300'); b.classList.add('bg-gray-100', 'text-gray-600', 'border-gray-200'); });
+      btn.classList.remove('bg-gray-100', 'text-gray-600', 'border-gray-200');
+      btn.classList.add('bg-primary-100', 'text-primary-700', 'border-primary-300');
+      updateIntervalPreview();
+    });
+  });
+
   $('#btn-time-split').addEventListener('click', () => {
-    const interval = parseFloat($('#time-interval').value);
-    if (interval < 1 || interval > duration) { showToast('有効な間隔を指定してください', 'warning'); return; }
+    const interval = getTimeIntervalSeconds();
+    if (interval < 1) { showToast('1秒以上の間隔を指定してください', 'warning'); return; }
+    if (interval >= duration) { showToast('音声の長さより短い間隔を指定してください', 'warning'); return; }
     markers = [];
     for (let t = interval; t < duration - 0.1; t += interval) {
       markers.push(t);
     }
     updateMarkersUI();
     drawOverlay();
-    showToast(`${interval}秒間隔で${markers.length}個のポイントを生成しました`, 'success');
+    showToast(`${formatIntervalLabel(interval)}間隔で${markers.length}個のポイントを生成しました`, 'success');
   });
 
   // === Split Execution ===

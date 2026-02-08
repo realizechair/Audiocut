@@ -218,15 +218,38 @@ app.get('/', (c) => {
 
         <!-- Time-based Split Mode -->
         <div id="mode-time" class="split-mode hidden">
-          <p class="text-sm text-gray-600 mb-4">固定の時間間隔で分割します。</p>
-          <div class="flex items-center gap-4">
+          <p class="text-sm text-gray-600 mb-4">固定の時間間隔で分割します。分と秒を指定してください。</p>
+          
+          <!-- Preset Buttons -->
+          <div class="flex flex-wrap items-center gap-2 mb-4">
+            <span class="text-xs text-gray-500 mr-1">プリセット:</span>
+            <button class="time-preset px-3 py-1.5 bg-gray-100 hover:bg-primary-100 hover:text-primary-700 text-gray-600 rounded-lg text-xs font-medium transition border border-gray-200 hover:border-primary-300" data-minutes="0" data-seconds="30">30秒</button>
+            <button class="time-preset px-3 py-1.5 bg-gray-100 hover:bg-primary-100 hover:text-primary-700 text-gray-600 rounded-lg text-xs font-medium transition border border-gray-200 hover:border-primary-300" data-minutes="1" data-seconds="0">1分</button>
+            <button class="time-preset px-3 py-1.5 bg-gray-100 hover:bg-primary-100 hover:text-primary-700 text-gray-600 rounded-lg text-xs font-medium transition border border-gray-200 hover:border-primary-300" data-minutes="2" data-seconds="0">2分</button>
+            <button class="time-preset px-3 py-1.5 bg-gray-100 hover:bg-primary-100 hover:text-primary-700 text-gray-600 rounded-lg text-xs font-medium transition border border-gray-200 hover:border-primary-300" data-minutes="3" data-seconds="0">3分</button>
+            <button class="time-preset px-3 py-1.5 bg-gray-100 hover:bg-primary-100 hover:text-primary-700 text-gray-600 rounded-lg text-xs font-medium transition border border-gray-200 hover:border-primary-300" data-minutes="5" data-seconds="0">5分</button>
+            <button class="time-preset px-3 py-1.5 bg-gray-100 hover:bg-primary-100 hover:text-primary-700 text-gray-600 rounded-lg text-xs font-medium transition border border-gray-200 hover:border-primary-300" data-minutes="10" data-seconds="0">10分</button>
+            <button class="time-preset px-3 py-1.5 bg-gray-100 hover:bg-primary-100 hover:text-primary-700 text-gray-600 rounded-lg text-xs font-medium transition border border-gray-200 hover:border-primary-300" data-minutes="15" data-seconds="0">15分</button>
+            <button class="time-preset px-3 py-1.5 bg-gray-100 hover:bg-primary-100 hover:text-primary-700 text-gray-600 rounded-lg text-xs font-medium transition border border-gray-200 hover:border-primary-300" data-minutes="30" data-seconds="0">30分</button>
+          </div>
+
+          <!-- Minutes / Seconds Input -->
+          <div class="flex items-end gap-3">
             <div>
-              <label class="text-xs text-gray-500 block mb-1">間隔（秒）</label>
-              <input type="number" id="time-interval" value="30" min="1" max="3600" class="w-24 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none">
+              <label class="text-xs text-gray-500 block mb-1">分</label>
+              <input type="number" id="time-minutes" value="1" min="0" max="999" class="w-20 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none text-center">
             </div>
-            <button id="btn-time-split" class="px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg text-sm font-medium transition flex items-center gap-2 mt-5">
-              <i class="fas fa-clock"></i>分割ポイント生成
-            </button>
+            <span class="text-gray-400 font-bold pb-2">:</span>
+            <div>
+              <label class="text-xs text-gray-500 block mb-1">秒</label>
+              <input type="number" id="time-seconds" value="0" min="0" max="59" class="w-20 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none text-center">
+            </div>
+            <div class="pb-0.5">
+              <span id="time-interval-preview" class="text-xs text-gray-400 block mb-1"></span>
+              <button id="btn-time-split" class="px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg text-sm font-medium transition flex items-center gap-2">
+                <i class="fas fa-clock"></i>分割ポイント生成
+              </button>
+            </div>
           </div>
         </div>
 

@@ -21,7 +21,8 @@
 - **ダウンロード**: 個別ダウンロード / 一括ダウンロード
 
 ## URL
-- **開発サーバー**: http://localhost:3000
+- **アプリ**: https://3000-ip1iwgn1srjrj25xdxb4z-cc2fbc16.sandbox.novita.ai
+- **GitHub**: https://github.com/realizechair/Audiocut
 
 ## 使い方
 1. MP3ファイルをドラッグ＆ドロップまたはクリックして選択

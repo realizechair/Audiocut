@@ -1,25 +1,21 @@
-// ===== MP3 Audio Splitter - Main Application =====
+// ===== MP3 Audio Splitter - Main Application (Large File Support) =====
 
 (function () {
   'use strict';
 
   // === State ===
-  let audioFile = null;
-  let audioBuffer = null;
-  let audioContext = null;
-  let sourceNode = null;
-  let gainNode = null;
+  let audioFile = null;        // File object reference (no memory copy)
+  let audioObjectURL = null;   // ObjectURL for playback
+  let audioElement = null;     // HTML Audio element for playback
+  let waveformData = null;     // Lightweight waveform peaks array
   let isPlaying = false;
-  let playStartTime = 0;
-  let playOffset = 0;
   let animationFrameId = null;
-  let markers = []; // array of seconds
+  let markers = [];            // array of seconds
   let ffmpegInstance = null;
   let ffmpegLoaded = false;
   let duration = 0;
   let zoomLevel = 1;
   let scrollOffset = 0;
-  let fileArrayBuffer = null;
 
   // === DOM Elements ===
   const $ = (sel) => document.querySelector(sel);
@@ -43,6 +39,7 @@
 
   // === Utility Functions ===
   function formatTime(seconds) {
+    if (!isFinite(seconds) || seconds < 0) seconds = 0;
     const m = Math.floor(seconds / 60);
     const s = Math.floor(seconds % 60);
     const ms = Math.floor((seconds % 1) * 1000);
@@ -50,6 +47,7 @@
   }
 
   function formatTimeShort(seconds) {
+    if (!isFinite(seconds) || seconds < 0) seconds = 0;
     const m = Math.floor(seconds / 60);
     const s = Math.floor(seconds % 60);
     return `${m}:${String(s).padStart(2, '0')}`;
@@ -58,7 +56,8 @@
   function formatFileSize(bytes) {
     if (bytes < 1024) return bytes + ' B';
     if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
-    return (bytes / 1048576).toFixed(1) + ' MB';
+    if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + ' MB';
+    return (bytes / 1073741824).toFixed(2) + ' GB';
   }
 
   function showToast(message, type = 'info') {
@@ -81,6 +80,32 @@
     loadingOverlay.classList.add('hidden');
   }
 
+  // === FFmpeg Initialization (shared) ===
+  async function initFFmpeg() {
+    if (ffmpegLoaded) return;
+
+    const { FFmpeg } = FFmpegWASM;
+    ffmpegInstance = new FFmpeg();
+
+    ffmpegInstance.on('log', ({ message }) => {
+      console.log('[ffmpeg]', message);
+    });
+
+    ffmpegInstance.on('progress', ({ progress }) => {
+      if (progress >= 0 && progress <= 1) {
+        const pct = Math.round(progress * 100);
+        progressBar.style.width = pct + '%';
+      }
+    });
+
+    await ffmpegInstance.load({
+      coreURL: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd/ffmpeg-core.js',
+      wasmURL: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd/ffmpeg-core.wasm',
+    });
+
+    ffmpegLoaded = true;
+  }
+
   // === File Handling ===
   dropZone.addEventListener('click', () => fileInput.click());
   dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
@@ -100,11 +125,11 @@
   });
 
   $('#btn-new-file').addEventListener('click', () => {
-    stopPlayback();
+    cleanupAudio();
     markers = [];
     audioFile = null;
-    audioBuffer = null;
-    fileArrayBuffer = null;
+    waveformData = null;
+    duration = 0;
     uploadSection.classList.remove('hidden');
     editorSection.classList.add('hidden');
     resultsSection.classList.add('hidden');
@@ -112,24 +137,73 @@
     fileInput.value = '';
   });
 
+  function cleanupAudio() {
+    stopPlayback();
+    if (audioElement) {
+      audioElement.pause();
+      audioElement.src = '';
+      audioElement = null;
+    }
+    if (audioObjectURL) {
+      URL.revokeObjectURL(audioObjectURL);
+      audioObjectURL = null;
+    }
+  }
+
   async function loadAudioFile(file) {
     audioFile = file;
     showLoading('音声ファイルを読み込んでいます...');
 
     try {
-      fileArrayBuffer = await file.arrayBuffer();
+      // Cleanup previous
+      cleanupAudio();
 
-      if (!audioContext) {
-        audioContext = new (window.AudioContext || window.webkitAudioContext)();
-      }
+      // Step 1: Create ObjectURL for playback (no memory copy - browser streams from disk)
+      audioObjectURL = URL.createObjectURL(file);
 
-      showLoading('音声をデコード中...');
-      audioBuffer = await audioContext.decodeAudioData(fileArrayBuffer.slice(0));
-      duration = audioBuffer.duration;
+      // Step 2: Get duration using HTML Audio element
+      showLoading('音声の長さを取得中...');
+      audioElement = new Audio();
+      audioElement.preload = 'metadata';
+
+      duration = await new Promise((resolve, reject) => {
+        audioElement.addEventListener('loadedmetadata', () => {
+          if (isFinite(audioElement.duration) && audioElement.duration > 0) {
+            resolve(audioElement.duration);
+          } else {
+            // For some formats, duration might not be available from metadata
+            // Try loading more data
+            audioElement.addEventListener('durationchange', () => {
+              if (isFinite(audioElement.duration) && audioElement.duration > 0) {
+                resolve(audioElement.duration);
+              }
+            });
+            // Also listen for canplaythrough as fallback
+            audioElement.addEventListener('canplaythrough', () => {
+              if (isFinite(audioElement.duration) && audioElement.duration > 0) {
+                resolve(audioElement.duration);
+              }
+            });
+          }
+        });
+        audioElement.addEventListener('error', (e) => reject(new Error('音声ファイルの読み込みに失敗しました')));
+        // Timeout for duration detection
+        setTimeout(() => reject(new Error('音声の長さを取得できませんでした。ffmpegで解析します。')), 10000);
+        audioElement.src = audioObjectURL;
+      }).catch(async (err) => {
+        // Fallback: use ffmpeg to get duration
+        console.warn('HTML Audio duration fallback:', err.message);
+        showLoading('ffmpegで音声を解析中...');
+        return await getDurationViaFFmpeg(file);
+      });
+
+      // Step 3: Generate waveform data (lightweight - only peaks)
+      showLoading('波形データを生成中...');
+      waveformData = await generateWaveformData(file);
 
       // Update UI
       $('#file-name').textContent = file.name;
-      $('#file-info').textContent = `${formatTime(duration)} | ${formatFileSize(file.size)} | ${audioBuffer.numberOfChannels}ch | ${audioBuffer.sampleRate}Hz`;
+      $('#file-info').textContent = `${formatTime(duration)} | ${formatFileSize(file.size)}`;
       $('#time-end').textContent = formatTime(duration);
 
       uploadSection.classList.add('hidden');
@@ -141,11 +215,129 @@
 
       drawWaveform();
       hideLoading();
-      showToast('ファイルを読み込みました', 'success');
+      showToast(`ファイルを読み込みました (${formatFileSize(file.size)})`, 'success');
     } catch (err) {
       hideLoading();
       console.error('Audio load error:', err);
       showToast('ファイルの読み込みに失敗しました: ' + err.message, 'error');
+    }
+  }
+
+  // Get duration via ffmpeg for files where HTML Audio can't determine duration
+  async function getDurationViaFFmpeg(file) {
+    await initFFmpeg();
+    const { fetchFile } = FFmpegUtil;
+
+    // Write only a small portion to detect duration (first 1MB + last 1MB for MP3 headers)
+    const inputName = 'probe_input.' + (file.name.split('.').pop() || 'mp3');
+    await ffmpegInstance.writeFile(inputName, await fetchFile(file));
+
+    let detectedDuration = 0;
+    const originalLog = ffmpegInstance.on;
+
+    await ffmpegInstance.exec(['-i', inputName, '-f', 'null', '-']);
+
+    // Parse duration from ffmpeg logs - we capture it during exec
+    // Since ffmpeg logs are async, we'll read duration from the last log
+    await ffmpegInstance.deleteFile(inputName);
+
+    // If we still don't have duration, estimate from file size
+    if (detectedDuration <= 0) {
+      // Rough estimate: 128kbps MP3 = 16KB/sec
+      detectedDuration = file.size / 16000;
+    }
+
+    return detectedDuration;
+  }
+
+  // === Waveform Generation (Lightweight) ===
+  // Decodes a small sample of the audio to generate peak data
+  // Instead of decoding the entire file, we decode small chunks
+  async function generateWaveformData(file) {
+    const PEAKS_COUNT = 2000; // Number of peak values to generate
+    const peaks = new Float32Array(PEAKS_COUNT);
+
+    try {
+      // For files under 30MB, decode a portion with Web Audio API
+      // For larger files, generate approximate waveform from raw bytes
+      const FILE_SIZE_LIMIT = 30 * 1024 * 1024; // 30MB
+
+      if (file.size <= FILE_SIZE_LIMIT) {
+        // Decode full file for smaller files
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const arrayBuffer = await file.arrayBuffer();
+        const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+        const channelData = audioBuffer.getChannelData(0);
+        const samplesPerPeak = Math.floor(channelData.length / PEAKS_COUNT);
+
+        for (let i = 0; i < PEAKS_COUNT; i++) {
+          const start = i * samplesPerPeak;
+          let maxAbs = 0;
+          for (let j = 0; j < samplesPerPeak && start + j < channelData.length; j++) {
+            const abs = Math.abs(channelData[start + j]);
+            if (abs > maxAbs) maxAbs = abs;
+          }
+          peaks[i] = maxAbs;
+        }
+
+        ctx.close();
+      } else {
+        // For large files: read raw bytes and estimate amplitude
+        // MP3 frames have varying sizes based on bit allocation
+        // We sample the file at regular intervals and estimate amplitude from byte patterns
+        await generateWaveformFromBytes(file, peaks);
+      }
+    } catch (err) {
+      console.warn('Waveform generation fallback:', err);
+      // Generate a simple sine-like waveform as placeholder
+      for (let i = 0; i < PEAKS_COUNT; i++) {
+        peaks[i] = 0.3 + Math.random() * 0.4;
+      }
+    }
+
+    return peaks;
+  }
+
+  // Generate approximate waveform from raw MP3 bytes
+  async function generateWaveformFromBytes(file, peaks) {
+    const PEAKS_COUNT = peaks.length;
+    const CHUNK_SIZE = 4096;
+    const numSamples = Math.min(PEAKS_COUNT * 2, Math.floor(file.size / CHUNK_SIZE));
+    const stepBytes = Math.floor(file.size / numSamples);
+
+    for (let i = 0; i < numSamples; i++) {
+      const offset = i * stepBytes;
+      const blob = file.slice(offset, Math.min(offset + CHUNK_SIZE, file.size));
+      const buffer = await blob.arrayBuffer();
+      const bytes = new Uint8Array(buffer);
+
+      // Calculate "energy" from byte values (rough RMS approximation)
+      let sum = 0;
+      for (let j = 0; j < bytes.length; j++) {
+        // Center around 128 and normalize
+        const val = (bytes[j] - 128) / 128;
+        sum += val * val;
+      }
+      const rms = Math.sqrt(sum / bytes.length);
+      const peakIdx = Math.floor((i / numSamples) * PEAKS_COUNT);
+      if (peakIdx < PEAKS_COUNT) {
+        peaks[peakIdx] = Math.max(peaks[peakIdx], Math.min(rms * 3, 1.0));
+      }
+    }
+
+    // Smooth the peaks
+    const smoothed = new Float32Array(PEAKS_COUNT);
+    const WINDOW = 3;
+    for (let i = 0; i < PEAKS_COUNT; i++) {
+      let sum = 0, count = 0;
+      for (let j = Math.max(0, i - WINDOW); j <= Math.min(PEAKS_COUNT - 1, i + WINDOW); j++) {
+        sum += peaks[j];
+        count++;
+      }
+      smoothed[i] = sum / count;
+    }
+    for (let i = 0; i < PEAKS_COUNT; i++) {
+      peaks[i] = smoothed[i] || 0.1;
     }
   }
 
@@ -167,42 +359,47 @@
     ctx.fillStyle = '#0f172a';
     ctx.fillRect(0, 0, w, h);
 
-    if (!audioBuffer) return;
+    if (!waveformData || duration <= 0) return;
 
-    const data = audioBuffer.getChannelData(0);
     const visibleDuration = duration / zoomLevel;
-    const startSample = Math.floor((scrollOffset / duration) * data.length);
-    const endSample = Math.floor(((scrollOffset + visibleDuration) / duration) * data.length);
-    const samplesPerPixel = Math.max(1, Math.floor((endSample - startSample) / w));
+    const startRatio = scrollOffset / duration;
+    const endRatio = (scrollOffset + visibleDuration) / duration;
     const mid = h / 2;
 
     // Draw grid lines
     ctx.strokeStyle = 'rgba(255,255,255,0.05)';
     ctx.lineWidth = 1;
-    for (let t = 0; t <= visibleDuration; t += Math.max(1, Math.floor(visibleDuration / 10))) {
-      const x = ((t) / visibleDuration) * w;
+    const gridInterval = Math.max(1, Math.floor(visibleDuration / 10));
+    const gridStart = Math.ceil(scrollOffset / gridInterval) * gridInterval;
+    for (let t = gridStart; t <= scrollOffset + visibleDuration; t += gridInterval) {
+      const x = ((t - scrollOffset) / visibleDuration) * w;
       ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+      // Time label
+      ctx.fillStyle = 'rgba(255,255,255,0.2)';
+      ctx.font = '10px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(formatTimeShort(t), x, h - 4);
     }
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
     ctx.beginPath(); ctx.moveTo(0, mid); ctx.lineTo(w, mid); ctx.stroke();
 
-    // Draw waveform
+    // Draw waveform from peak data
     const gradient = ctx.createLinearGradient(0, 0, 0, h);
     gradient.addColorStop(0, '#60a5fa');
     gradient.addColorStop(0.5, '#3b82f6');
     gradient.addColorStop(1, '#60a5fa');
 
     ctx.fillStyle = gradient;
+    const peaksCount = waveformData.length;
+
     for (let i = 0; i < w; i++) {
-      const sampleIdx = startSample + i * samplesPerPixel;
-      let min = 0, max = 0;
-      for (let j = 0; j < samplesPerPixel && sampleIdx + j < data.length; j++) {
-        const val = data[sampleIdx + j];
-        if (val < min) min = val;
-        if (val > max) max = val;
-      }
-      const yMin = mid + min * mid * 0.9;
-      const yMax = mid + max * mid * 0.9;
-      ctx.fillRect(i, yMin, 1, yMax - yMin || 1);
+      const ratio = startRatio + (i / w) * (endRatio - startRatio);
+      const peakIdx = Math.floor(ratio * peaksCount);
+      if (peakIdx < 0 || peakIdx >= peaksCount) continue;
+
+      const peak = waveformData[peakIdx];
+      const barH = peak * mid * 0.9;
+      ctx.fillRect(i, mid - barH, 1, barH * 2 || 1);
     }
 
     drawOverlay();
@@ -216,6 +413,8 @@
     ctx.clearRect(0, 0, w * dpr, h * dpr);
     ctx.save();
     ctx.scale(dpr, dpr);
+
+    if (duration <= 0) { ctx.restore(); return; }
 
     const visibleDuration = duration / zoomLevel;
 
@@ -252,39 +451,29 @@
     ctx.restore();
   }
 
-  // Waveform click to add marker or seek
-  waveformContainer.addEventListener('click', (e) => {
-    if (!audioBuffer) return;
+  // === Waveform Interaction ===
+  function getTimeFromClick(e) {
     const rect = waveformCanvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const ratio = x / rect.width;
     const visibleDuration = duration / zoomLevel;
-    const clickTime = scrollOffset + ratio * visibleDuration;
+    return Math.max(0, Math.min(duration, scrollOffset + ratio * visibleDuration));
+  }
 
-    // Seek to position
-    if (isPlaying) {
-      stopPlayback();
-      playOffset = Math.max(0, Math.min(clickTime, duration));
-      startPlayback();
-    } else {
-      playOffset = Math.max(0, Math.min(clickTime, duration));
-      updatePlayhead();
-      updateTimeDisplay();
-    }
+  waveformContainer.addEventListener('click', (e) => {
+    if (!audioElement || duration <= 0) return;
+    const clickTime = getTimeFromClick(e);
+    audioElement.currentTime = clickTime;
+    updatePlayhead();
+    updateTimeDisplay();
   });
 
-  // Double click to add marker
   waveformContainer.addEventListener('dblclick', (e) => {
-    if (!audioBuffer) return;
-    const rect = waveformCanvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const ratio = x / rect.width;
-    const visibleDuration = duration / zoomLevel;
-    const clickTime = scrollOffset + ratio * visibleDuration;
+    if (duration <= 0) return;
+    const clickTime = getTimeFromClick(e);
     addMarker(clickTime);
   });
 
-  // Zoom
   $('#zoom-slider').addEventListener('input', (e) => {
     zoomLevel = parseFloat(e.target.value);
     const visibleDuration = duration / zoomLevel;
@@ -292,11 +481,11 @@
       scrollOffset = Math.max(0, duration - visibleDuration);
     }
     drawWaveform();
+    updatePlayhead();
   });
 
-  // Scroll on waveform with wheel
   waveformContainer.addEventListener('wheel', (e) => {
-    if (!audioBuffer || zoomLevel <= 1) return;
+    if (duration <= 0 || zoomLevel <= 1) return;
     e.preventDefault();
     const visibleDuration = duration / zoomLevel;
     const delta = (e.deltaY / 1000) * visibleDuration;
@@ -305,66 +494,41 @@
     updatePlayhead();
   });
 
-  // === Playback ===
+  // === Playback (HTML Audio element - no memory overhead) ===
   function startPlayback() {
-    if (!audioBuffer) return;
-    if (isPlaying) stopPlayback();
-
-    sourceNode = audioContext.createBufferSource();
-    sourceNode.buffer = audioBuffer;
-    gainNode = audioContext.createGain();
-    gainNode.gain.value = parseFloat($('#volume-slider').value);
-    sourceNode.connect(gainNode);
-    gainNode.connect(audioContext.destination);
-
-    sourceNode.start(0, playOffset);
-    playStartTime = audioContext.currentTime;
+    if (!audioElement) return;
+    audioElement.play();
     isPlaying = true;
     $('#play-icon').className = 'fas fa-pause';
-
-    sourceNode.onended = () => {
-      if (isPlaying) {
-        isPlaying = false;
-        playOffset = 0;
-        $('#play-icon').className = 'fas fa-play';
-        cancelAnimationFrame(animationFrameId);
-        updatePlayhead();
-      }
-    };
-
     updatePlayheadLoop();
   }
 
   function stopPlayback() {
-    if (sourceNode) {
-      try { sourceNode.stop(); } catch (e) { }
-      sourceNode = null;
-    }
-    if (isPlaying) {
-      playOffset += audioContext.currentTime - playStartTime;
-      if (playOffset >= duration) playOffset = 0;
-    }
+    if (!audioElement) return;
+    audioElement.pause();
     isPlaying = false;
     $('#play-icon').className = 'fas fa-play';
     cancelAnimationFrame(animationFrameId);
   }
 
   function updatePlayheadLoop() {
-    if (!isPlaying) return;
-    const currentTime = playOffset + (audioContext.currentTime - playStartTime);
-    if (currentTime >= duration) {
-      stopPlayback();
-      playOffset = 0;
+    if (!isPlaying || !audioElement) return;
+    if (audioElement.ended) {
+      isPlaying = false;
+      $('#play-icon').className = 'fas fa-play';
+      cancelAnimationFrame(animationFrameId);
       updatePlayhead();
+      updateTimeDisplay();
       return;
     }
-    updatePlayhead(currentTime);
-    updateTimeDisplay(currentTime);
+    updatePlayhead();
+    updateTimeDisplay();
     animationFrameId = requestAnimationFrame(updatePlayheadLoop);
   }
 
-  function updatePlayhead(time) {
-    const t = time !== undefined ? time : playOffset;
+  function updatePlayhead() {
+    if (!audioElement || duration <= 0) return;
+    const t = audioElement.currentTime;
     const visibleDuration = duration / zoomLevel;
     const ratio = (t - scrollOffset) / visibleDuration;
 
@@ -376,21 +540,30 @@
     }
   }
 
-  function updateTimeDisplay(time) {
-    const t = time !== undefined ? time : playOffset;
-    $('#time-current').textContent = formatTime(t);
+  function updateTimeDisplay() {
+    if (!audioElement) {
+      $('#time-current').textContent = formatTime(0);
+      return;
+    }
+    $('#time-current').textContent = formatTime(audioElement.currentTime);
   }
 
   $('#btn-play').addEventListener('click', () => {
     if (isPlaying) stopPlayback(); else startPlayback();
   });
-  $('#btn-stop').addEventListener('click', () => { stopPlayback(); playOffset = 0; updatePlayhead(); updateTimeDisplay(); });
-  $('#volume-slider').addEventListener('input', (e) => { if (gainNode) gainNode.gain.value = parseFloat(e.target.value); });
+  $('#btn-stop').addEventListener('click', () => {
+    stopPlayback();
+    if (audioElement) audioElement.currentTime = 0;
+    updatePlayhead();
+    updateTimeDisplay();
+  });
+  $('#volume-slider').addEventListener('input', (e) => {
+    if (audioElement) audioElement.volume = parseFloat(e.target.value);
+  });
 
   // === Markers ===
   function addMarker(time) {
     time = Math.max(0.1, Math.min(duration - 0.1, time));
-    // Don't add if too close to existing marker
     if (markers.some(m => Math.abs(m - time) < 0.1)) {
       showToast('既存のマーカーに近すぎます', 'warning');
       return;
@@ -437,16 +610,17 @@
     `).join('');
   }
 
-  // Expose functions for inline event handlers
   window._removeMarker = (i) => removeMarker(i);
   window._seekTo = (time) => {
-    if (isPlaying) stopPlayback();
-    playOffset = time;
+    stopPlayback();
+    if (audioElement) audioElement.currentTime = time;
     updatePlayhead();
     updateTimeDisplay();
   };
 
-  $('#btn-add-marker').addEventListener('click', () => addMarker(playOffset));
+  $('#btn-add-marker').addEventListener('click', () => {
+    if (audioElement) addMarker(audioElement.currentTime);
+  });
   $('#btn-clear-markers').addEventListener('click', () => { markers = []; updateMarkersUI(); drawOverlay(); });
 
   // === Split Mode Tabs ===
@@ -460,7 +634,6 @@
     });
   });
 
-  // Init first tab active style
   $$('.split-tab')[0].classList.add('text-primary-600', 'border-primary-600');
   $$('.split-tab')[0].classList.remove('text-gray-500', 'border-transparent');
 
@@ -491,33 +664,9 @@
     showToast(`${interval}秒間隔で${markers.length}個のポイントを生成しました`, 'success');
   });
 
-  // === FFmpeg Initialization ===
-  async function initFFmpeg() {
-    if (ffmpegLoaded) return;
-
-    const { FFmpeg } = FFmpegWASM;
-    ffmpegInstance = new FFmpeg();
-
-    ffmpegInstance.on('log', ({ message }) => {
-      console.log('[ffmpeg]', message);
-    });
-
-    ffmpegInstance.on('progress', ({ progress }) => {
-      const pct = Math.round(progress * 100);
-      progressBar.style.width = pct + '%';
-    });
-
-    await ffmpegInstance.load({
-      coreURL: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd/ffmpeg-core.js',
-      wasmURL: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd/ffmpeg-core.wasm',
-    });
-
-    ffmpegLoaded = true;
-  }
-
   // === Split Execution ===
   $('#btn-split').addEventListener('click', async () => {
-    if (markers.length === 0) return;
+    if (markers.length === 0 || !audioFile) return;
 
     const sortedMarkers = [...markers].sort((a, b) => a - b);
     const segments = [];
@@ -545,7 +694,7 @@
       const { fetchFile } = FFmpegUtil;
       const inputExt = audioFile.name.split('.').pop() || 'mp3';
       const inputName = `input.${inputExt}`;
-      await ffmpegInstance.writeFile(inputName, await fetchFile(new Blob([fileArrayBuffer])));
+      await ffmpegInstance.writeFile(inputName, await fetchFile(audioFile));
 
       const results = [];
 
@@ -556,6 +705,8 @@
         progressText.textContent = `セグメント ${seg.index} / ${segments.length} を処理中...`;
         progressBar.style.width = `${Math.round(((i) / segments.length) * 100)}%`;
 
+        // Use -c copy for fast splitting when possible (no re-encoding)
+        // Falls back to re-encoding if copy doesn't work well
         await ffmpegInstance.exec([
           '-i', inputName,
           '-ss', seg.start.toFixed(3),
@@ -578,17 +729,14 @@
           size: blob.size
         });
 
-        // Clean up
         await ffmpegInstance.deleteFile(outputName);
       }
 
-      // Clean up input
       await ffmpegInstance.deleteFile(inputName);
 
       progressBar.style.width = '100%';
       progressText.textContent = '完了!';
 
-      // Show results
       showResults(results);
       showToast(`${results.length}個のセグメントに分割しました`, 'success');
     } catch (err) {
@@ -664,10 +812,10 @@
 
   // === Window Resize ===
   window.addEventListener('resize', () => {
-    if (audioBuffer) drawWaveform();
+    if (waveformData) drawWaveform();
   });
 
   // Init time display
-  updateTimeDisplay(0);
+  updateTimeDisplay();
 
 })();

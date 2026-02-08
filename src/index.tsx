@@ -104,7 +104,8 @@ app.get('/', (c) => {
             <p class="text-lg font-semibold text-gray-700">MP3ファイルをドラッグ＆ドロップ</p>
             <p class="text-sm text-gray-500 mt-1">または<span class="text-primary-600 font-medium underline">クリックしてファイルを選択</span></p>
           </div>
-          <p class="text-xs text-gray-400">対応形式: MP3 / WAV / OGG / M4A / FLAC（最大500MB）</p>
+          <p class="text-xs text-gray-400">対応形式: MP3 / WAV / OGG / M4A / FLAC</p>
+          <p class="text-xs text-green-600 mt-1 font-medium"><i class="fas fa-check-circle mr-1"></i>大容量ファイル対応 - メモリ効率最適化済み</p>
         </div>
         <input type="file" id="file-input" accept="audio/*" class="hidden">
       </div>

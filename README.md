@@ -21,7 +21,8 @@
 - **ダウンロード**: 個別ダウンロード / 一括ダウンロード
 
 ## URL
-- **アプリ**: https://3000-ip1iwgn1srjrj25xdxb4z-cc2fbc16.sandbox.novita.ai
+- **アプリ（本番）**: https://9d172605-3171-479c-b4ef-57d89d40c936.vip.gensparksite.com/
+- **アプリ（開発）**: https://3000-ip1iwgn1srjrj25xdxb4z-cc2fbc16.sandbox.novita.ai
 - **GitHub**: https://github.com/realizechair/Audiocut
 
 ## 使い方

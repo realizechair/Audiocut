@@ -312,8 +312,8 @@ app.get('/', (c) => {
     </div>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.15/dist/umd/ffmpeg.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.2/dist/umd/util.min.js"></script>
+  <script src="/static/ffmpeg/ffmpeg.min.js"></script>
+  <script src="/static/ffmpeg/util.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>`)

@@ -81,6 +81,14 @@
   }
 
   // === FFmpeg Initialization (shared) ===
+  // CORS workaround: fetch worker script and create Blob URL
+  async function toBlobURL(url, mimeType) {
+    const response = await fetch(url);
+    const blob = await response.blob();
+    const blobWithType = new Blob([blob], { type: mimeType });
+    return URL.createObjectURL(blobWithType);
+  }
+
   async function initFFmpeg() {
     if (ffmpegLoaded) return;
 
@@ -98,9 +106,15 @@
       }
     });
 
+    const BASE = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd';
+    const coreURL = await toBlobURL(`${BASE}/ffmpeg-core.js`, 'text/javascript');
+    const wasmURL = await toBlobURL(`${BASE}/ffmpeg-core.wasm`, 'application/wasm');
+    const workerURL = await toBlobURL(`${BASE}/ffmpeg-core.worker.js`, 'text/javascript');
+
     await ffmpegInstance.load({
-      coreURL: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd/ffmpeg-core.js',
-      wasmURL: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd/ffmpeg-core.wasm',
+      coreURL,
+      wasmURL,
+      workerURL,
     });
 
     ffmpegLoaded = true;

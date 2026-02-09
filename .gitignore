@@ -32,7 +32,4 @@ lerna-debug.log*
 # misc
 .DS_Store
 
-# ffmpeg-core files (copied from node_modules by build script)
-public/static/ffmpeg/ffmpeg-core.js
-public/static/ffmpeg/ffmpeg-core.wasm
-dist/
+

@@ -81,12 +81,75 @@
   }
 
   // === FFmpeg Initialization (shared) ===
-  // Load file as BlobURL (same-origin fetch, no CORS issues)
-  async function toBlobURL(url, mimeType) {
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`Failed to fetch ${url}: ${response.status}`);
-    const buf = await response.arrayBuffer();
-    const blob = new Blob([buf], { type: mimeType });
+  
+  // Download file with progress tracking, timeout, and retry
+  async function fetchWithProgress(url, label, retries = 3) {
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      try {
+        console.log(`[ffmpeg-init] Fetching ${label} (attempt ${attempt}/${retries}): ${url}`);
+        
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 min timeout
+        
+        const response = await fetch(url, { signal: controller.signal });
+        clearTimeout(timeoutId);
+        
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status} for ${url}`);
+        }
+        
+        const contentLength = response.headers.get('content-length');
+        const total = contentLength ? parseInt(contentLength, 10) : 0;
+        
+        // If we can track progress, use a reader
+        if (total > 0 && response.body) {
+          const reader = response.body.getReader();
+          const chunks = [];
+          let received = 0;
+          
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(value);
+            received += value.length;
+            
+            const pct = Math.round((received / total) * 100);
+            const receivedMB = (received / 1048576).toFixed(1);
+            const totalMB = (total / 1048576).toFixed(1);
+            progressText.textContent = `${label}をダウンロード中... ${receivedMB}MB / ${totalMB}MB (${pct}%)`;
+          }
+          
+          // Combine chunks into single ArrayBuffer
+          const totalLength = chunks.reduce((acc, chunk) => acc + chunk.length, 0);
+          const result = new Uint8Array(totalLength);
+          let offset = 0;
+          for (const chunk of chunks) {
+            result.set(chunk, offset);
+            offset += chunk.length;
+          }
+          
+          console.log(`[ffmpeg-init] Downloaded ${label}: ${totalLength} bytes`);
+          return result.buffer;
+        } else {
+          // Fallback: read as arrayBuffer without progress
+          progressText.textContent = `${label}をダウンロード中...`;
+          const buf = await response.arrayBuffer();
+          console.log(`[ffmpeg-init] Downloaded ${label}: ${buf.byteLength} bytes`);
+          return buf;
+        }
+      } catch (err) {
+        console.warn(`[ffmpeg-init] Attempt ${attempt} failed for ${label}:`, err.message);
+        if (attempt === retries) throw err;
+        // Wait before retry (exponential backoff)
+        const waitMs = 1000 * Math.pow(2, attempt - 1);
+        progressText.textContent = `${label}のダウンロードに失敗。${waitMs / 1000}秒後にリトライ...`;
+        await new Promise(r => setTimeout(r, waitMs));
+      }
+    }
+  }
+  
+  function arrayBufferToBlobURL(buffer, mimeType) {
+    const blob = new Blob([buffer], { type: mimeType });
     return URL.createObjectURL(blob);
   }
 
@@ -107,17 +170,68 @@
       }
     });
 
-    // Load ffmpeg-core from same origin (files are in /static/ffmpeg/)
-    progressText.textContent = 'FFmpegエンジンを読み込み中...';
-    const coreURL = await toBlobURL('/static/ffmpeg/ffmpeg-core.js', 'text/javascript');
+    // CDN list for fallback (try each in order)
+    const CDN_BASES = [
+      'https://unpkg.com/@ffmpeg/core@0.12.10/dist/umd',
+      'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd'
+    ];
 
-    progressText.textContent = 'WASMモジュールを読み込み中 (約31MB)...';
-    const wasmURL = await toBlobURL('/static/ffmpeg/ffmpeg-core.wasm', 'application/wasm');
-
-    progressText.textContent = 'FFmpegを初期化中...';
-    await ffmpegInstance.load({ coreURL, wasmURL });
-
-    ffmpegLoaded = true;
+    console.log('[ffmpeg-init] Starting FFmpeg initialization...');
+    progressSection.classList.remove('hidden');
+    progressBar.style.width = '0%';
+    
+    let lastError = null;
+    
+    for (let cdnIdx = 0; cdnIdx < CDN_BASES.length; cdnIdx++) {
+      const BASE_URL = CDN_BASES[cdnIdx];
+      const cdnName = cdnIdx === 0 ? 'unpkg' : 'jsDelivr';
+      
+      try {
+        console.log(`[ffmpeg-init] Trying CDN: ${cdnName} (${BASE_URL})`);
+        
+        // Step 1: Download ffmpeg-core.js (~110KB)
+        progressText.textContent = `FFmpegコアをダウンロード中 (${cdnName})...`;
+        const coreBuf = await fetchWithProgress(
+          `${BASE_URL}/ffmpeg-core.js`, 
+          `FFmpegコア (${cdnName})`,
+          2
+        );
+        const coreURL = arrayBufferToBlobURL(coreBuf, 'text/javascript');
+        progressBar.style.width = '20%';
+        
+        // Step 2: Download ffmpeg-core.wasm (~31MB - the big one)
+        progressText.textContent = `WASMモジュールをダウンロード中 (${cdnName}, 約31MB)...`;
+        const wasmBuf = await fetchWithProgress(
+          `${BASE_URL}/ffmpeg-core.wasm`,
+          `WASM (${cdnName})`,
+          2
+        );
+        const wasmURL = arrayBufferToBlobURL(wasmBuf, 'application/wasm');
+        progressBar.style.width = '80%';
+        
+        // Step 3: Initialize FFmpeg with BlobURLs
+        progressText.textContent = 'FFmpegを初期化中...';
+        console.log('[ffmpeg-init] Loading FFmpeg with BlobURLs...');
+        await ffmpegInstance.load({ coreURL, wasmURL });
+        console.log('[ffmpeg-init] FFmpeg loaded successfully!');
+        progressBar.style.width = '100%';
+        progressText.textContent = 'FFmpegの準備完了';
+        
+        ffmpegLoaded = true;
+        return; // Success!
+        
+      } catch (err) {
+        console.error(`[ffmpeg-init] CDN ${cdnName} failed:`, err);
+        lastError = err;
+        // Try next CDN
+        continue;
+      }
+    }
+    
+    // All CDNs failed
+    const errorMsg = `FFmpegの初期化に失敗しました。ネットワーク接続を確認してください。\n詳細: ${lastError?.message || 'Unknown error'}`;
+    console.error('[ffmpeg-init]', errorMsg);
+    throw new Error(errorMsg);
   }
 
   // === File Handling ===

@@ -81,22 +81,13 @@
   }
 
   // === FFmpeg Initialization (shared) ===
-  // Fetch remote file and convert to BlobURL to bypass CORS restrictions
-  async function toBlobURL(url, mimeType, retries = 3) {
-    for (let attempt = 1; attempt <= retries; attempt++) {
-      try {
-        progressText.textContent = `FFmpegコンポーネントをダウンロード中... (${attempt}/${retries})`;
-        const response = await fetch(url);
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const buf = await response.arrayBuffer();
-        const blob = new Blob([buf], { type: mimeType });
-        return URL.createObjectURL(blob);
-      } catch (err) {
-        console.warn(`toBlobURL attempt ${attempt} failed for ${url}:`, err);
-        if (attempt === retries) throw new Error(`ダウンロード失敗 (${url.split('/').pop()}): ${err.message}`);
-        await new Promise(r => setTimeout(r, 1000 * attempt));
-      }
-    }
+  // Load file as BlobURL (same-origin fetch, no CORS issues)
+  async function toBlobURL(url, mimeType) {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Failed to fetch ${url}: ${response.status}`);
+    const buf = await response.arrayBuffer();
+    const blob = new Blob([buf], { type: mimeType });
+    return URL.createObjectURL(blob);
   }
 
   async function initFFmpeg() {
@@ -116,30 +107,15 @@
       }
     });
 
-    // Try multiple CDN sources for reliability
-    const CDN_SOURCES = [
-      'https://unpkg.com/@ffmpeg/core@0.12.10/dist/umd',
-      'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd',
-    ];
+    // Load ffmpeg-core from same origin (files are in /static/ffmpeg/)
+    progressText.textContent = 'FFmpegエンジンを読み込み中...';
+    const coreURL = await toBlobURL('/static/ffmpeg/ffmpeg-core.js', 'text/javascript');
 
-    let loaded = false;
-    for (const base of CDN_SOURCES) {
-      try {
-        progressText.textContent = `FFmpegをダウンロード中...`;
-        const coreURL = await toBlobURL(`${base}/ffmpeg-core.js`, 'text/javascript');
-        progressText.textContent = `WASM (約31MB) をダウンロード中...`;
-        const wasmURL = await toBlobURL(`${base}/ffmpeg-core.wasm`, 'application/wasm');
-        await ffmpegInstance.load({ coreURL, wasmURL });
-        loaded = true;
-        break;
-      } catch (err) {
-        console.warn(`CDN ${base} failed:`, err);
-      }
-    }
+    progressText.textContent = 'WASMモジュールを読み込み中 (約31MB)...';
+    const wasmURL = await toBlobURL('/static/ffmpeg/ffmpeg-core.wasm', 'application/wasm');
 
-    if (!loaded) {
-      throw new Error('FFmpegの初期化に失敗しました。ネットワーク接続を確認してください。');
-    }
+    progressText.textContent = 'FFmpegを初期化中...';
+    await ffmpegInstance.load({ coreURL, wasmURL });
 
     ffmpegLoaded = true;
   }

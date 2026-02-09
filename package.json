@@ -3,12 +3,13 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build && node scripts/copy-ffmpeg.js",
     "preview": "wrangler pages dev",
     "deploy": "npm run build && wrangler pages deploy",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings"
   },
   "dependencies": {
+    "@ffmpeg/core": "^0.12.10",
     "hono": "^4.11.8"
   },
   "devDependencies": {
